@@ -14,8 +14,8 @@ from webdriver_manager.chrome import ChromeDriverManager
 BASE_URL = "https://vortex-hw.ipcom.ai"
 TAM_PAGINA = 50
 RELLENO_REPORTE = 0  # segundo segmento del URL; confirmado que no afecta el contenido
-PAGINA_FIJA = 1  # no se necesita el nombre de campaña aquí, así que basta con página 1
 
+XPATH_NOMBRE_CAMPANIA = "//span[small[contains(@class,'md-primary')]]"
 XPATH_CARD_INFORME_BASE = (
     "//span[contains(@class,'md-subheading') and contains(normalize-space(.),"
     " 'Informe Base')]/ancestor::div["
@@ -35,7 +35,7 @@ def cargar_configuracion():
   with open(CONFIG_PATH, "r", encoding="utf-8") as f:
     config = json.load(f)
 
-  requeridos = ["correo", "password", "id_inicio", "id_fin"]
+  requeridos = ["correo", "password", "id_inicio", "id_fin", "pagina"]
   faltantes = [k for k in requeridos if k not in config]
   if faltantes:
     sys.exit(f"config.json no tiene los campos: {', '.join(faltantes)}")
@@ -66,38 +66,73 @@ driver = webdriver.Chrome(service=servicio, options=opciones)
 wait = WebDriverWait(driver, 15)
 
 
-def url_reporte(campaign_id, pagina=PAGINA_FIJA):
+def url_reporte(campaign_id, pagina):
   return (
       f"{BASE_URL}/admin/campaigns/{campaign_id}/reports/"
       f"{RELLENO_REPORTE}/{pagina}/{TAM_PAGINA}/"
   )
 
 
-def leer_total_informe_base():
-  """Devuelve el total de llamadas del bloque 'Informe Base', o None si el
-  bloque no aparece (indicio de que el ID no existe)."""
+def leer_datos_reporte():
+  """Lee de la página actual: nombre de campaña (o None si viene vacío o es
+  solo un guion) y el total de llamadas del bloque 'Informe Base' (o None si
+  no se encuentra)."""
+  nombre = None
+  try:
+    span_nombre = driver.find_element(By.XPATH, XPATH_NOMBRE_CAMPANIA)
+    texto = span_nombre.text.strip()
+    texto = re.sub(r"\(id\s*\d+\)", "", texto).strip(" -").strip()
+    nombre = texto or None
+  except NoSuchElementException:
+    nombre = None
+
+  total = None
   try:
     card = driver.find_element(By.XPATH, XPATH_CARD_INFORME_BASE)
+    m = re.search(r"Total\s*\n?\s*([\d.,]+)", card.text)
+    if m:
+      total = int(m.group(1).replace(",", "").replace(".", ""))
   except NoSuchElementException:
-    return None
+    total = None
 
-  m = re.search(r"Total\s*\n?\s*([\d.,]+)", card.text)
-  if not m:
-    return None
-  return int(m.group(1).replace(",", "").replace(".", ""))
+  return nombre, total
 
 
-def existe_campania(campaign_id):
-  driver.get(url_reporte(campaign_id))
+def obtener_estado_reporte(campaign_id, pagina):
+  driver.get(url_reporte(campaign_id, pagina))
   try:
     wait.until(
         lambda d: len(d.find_elements(By.XPATH, XPATH_CARD_INFORME_BASE)) > 0
     )
   except TimeoutException:
-    return False
-  total = leer_total_informe_base()
-  print(f"  (debug) ID {campaign_id}: total leído = {total}")
-  return total not in (None, 0)
+    return None, None
+  return leer_datos_reporte()
+
+
+def validar_campania(campaign_id, pagina_inicial):
+  """Devuelve (es_valida, nombre, pagina_usada). Es válida solo si tiene
+  nombre de campaña Y un total de llamadas mayor a cero. Si hay datos pero
+  el nombre sale vacío, retrocede de página en página (asumiendo que la
+  campaña quedó en una página anterior del listado)."""
+  pagina = pagina_inicial
+  nombre, total = obtener_estado_reporte(campaign_id, pagina)
+  print(f"  (Validación) ID {campaign_id} página {pagina}: nombre={nombre!r} total={total}")
+
+  if total in (None, 0):
+    return False, None, pagina
+
+  while not nombre and pagina > 1:
+    pagina -= 1
+    nombre, total_reintento = obtener_estado_reporte(campaign_id, pagina)
+    print(
+        f"  (debug) ID {campaign_id} reintento página {pagina}:"
+        f" nombre={nombre!r} total={total_reintento}"
+    )
+    if total_reintento not in (None, 0):
+      total = total_reintento
+
+  es_valida = bool(nombre) and total not in (None, 0)
+  return es_valida, nombre, pagina
 
 
 def descargar_reporte_actual():
@@ -139,22 +174,30 @@ try:
   driver.execute_script("arguments[0].click();", boton_entrar)
   time.sleep(4)
 
-  # 2. Recorrer el rango de IDs indicado, descargando cada reporte existente
+  # 2. Recorrer el rango de IDs indicado, descargando cada reporte válido
   id_inicio = int(config["id_inicio"])
   id_fin = int(config["id_fin"])
+  pagina_actual = int(config["pagina"])
 
   total_descargados = 0
   total_omitidos = 0
 
   for campania_id in range(id_inicio, id_fin + 1):
-    if not existe_campania(campania_id):
-      print(f"ID {campania_id}: no existe o no tiene datos; se omite.")
+    es_valida, nombre, pagina_usada = validar_campania(campania_id, pagina_actual)
+
+    if not es_valida:
+      print(f"ID {campania_id}: no existe o no tiene nombre de campaña; se omite.")
       total_omitidos += 1
       continue
 
+    # El driver ya quedó posicionado en la página correcta tras validar_campania
+    pagina_actual = pagina_usada
     descargar_reporte_actual()
     total_descargados += 1
-    print(f"  [+] Reporte #{total_descargados} (ID {campania_id}) descargado correctamente.")
+    print(
+        f"  [+] Reporte #{total_descargados} (ID {campania_id}, '{nombre}')"
+        " descargado correctamente."
+    )
 
   print(
       f"\n¡Proceso finalizado! Descargados: {total_descargados}."

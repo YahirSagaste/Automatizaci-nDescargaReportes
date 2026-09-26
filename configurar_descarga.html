@@ -206,6 +206,15 @@
         <p class="hint">El script recorrerá del ID del primero al ID del último, incrementando de uno en uno.</p>
       </fieldset>
 
+      <fieldset>
+        <legend>Página del listado</legend>
+        <div class="field">
+          <label for="pagina">Número de página</label>
+          <input type="number" id="pagina" min="1" placeholder="2" required>
+        </div>
+        <p class="hint">El tamaño de página siempre es 50. Si el nombre de campaña no carga con esta página, el script probará hacia atrás (página 2 → 1, etc.) automáticamente.</p>
+      </fieldset>
+
       <button type="submit">Generar configuración e iniciar</button>
       <p class="error" id="error-msg"></p>
     </form>
@@ -234,8 +243,9 @@
     const password = document.getElementById('password').value;
     const idInicio = parseInt(document.getElementById('id-inicio').value, 10);
     const idFin = parseInt(document.getElementById('id-fin').value, 10);
+    const pagina = parseInt(document.getElementById('pagina').value, 10);
 
-    if (!correo || !password || Number.isNaN(idInicio) || Number.isNaN(idFin)) {
+    if (!correo || !password || Number.isNaN(idInicio) || Number.isNaN(idFin) || Number.isNaN(pagina)) {
       errorMsg.textContent = 'Completa todos los campos.';
       errorMsg.classList.add('visible');
       return;
@@ -245,12 +255,18 @@
       errorMsg.classList.add('visible');
       return;
     }
+    if (pagina < 1) {
+      errorMsg.textContent = 'El número de página debe ser 1 o mayor.';
+      errorMsg.classList.add('visible');
+      return;
+    }
 
     const config = {
       correo: correo,
       password: password,
       id_inicio: idInicio,
-      id_fin: idFin
+      id_fin: idFin,
+      pagina: pagina
     };
 
     const blob = new Blob([JSON.stringify(config, null, 2)], { type: 'application/json' });
